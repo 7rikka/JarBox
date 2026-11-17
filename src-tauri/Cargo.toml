@@ -3,6 +3,7 @@ name = "jarbox"
 version = "1.0.0"
 description = "JarBox - 本地 JAR 服务管理器"
 authors = ["JarBox"]
+license = "MIT"
 edition = "2021"
 rust-version = "1.77"
 

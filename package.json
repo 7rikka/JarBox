@@ -3,6 +3,7 @@
   "private": true,
   "version": "1.0.0",
   "description": "JarBox - 本地 JAR 服务管理器",
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "dev": "vite",

@@ -8,7 +8,7 @@
 
 基于 Tauri v2（Rust）+ React 构建，安装包只有 2 MB 出头，免安装运行也不需要 JRE 之外的东西。
 
-当前版本 `1.0.0`，是项目开源后的第一个版本。
+当前版本 `1.0.0`，是项目开源后的第一个版本，以 [MIT 许可](LICENSE)发布。
 
 ![服务列表](docs/screenshots/services.png)
 
@@ -198,7 +198,8 @@ npm run app:dev
 │  └─ tauri.conf.json       窗口与打包配置
 ├─ docs/screenshots/        README 截图
 ├─ scripts/gen-icon.mjs    生成图标源图
-└─ testdata/                测试用 Java 源码与资源
+├─ testdata/                测试用 Java 源码与资源
+└─ LICENSE                  MIT 许可
 ```
 
 ## 开发说明
@@ -207,3 +208,7 @@ npm run app:dev
 - 前端类型检查：`npx tsc --noEmit`。
 - 图标：`node scripts/gen-icon.mjs` 用纯数学绘制 1024×1024 源图（`src-tauri/icons/source.png`），再 `npx tauri icon src-tauri/icons/source.png -o src-tauri/icons` 导出各尺寸与 `icon.ico`。
 - 修改 `src-tauri/tauri.conf.json` 的 identifier 会同时改变数据目录和单实例互斥体，已有配置不会自动带过去。
+
+## 许可证
+
+以 [MIT 许可](LICENSE)发布，版权归 2026 7rikka 所有。可以自由使用、修改、分发，包括商业用途，保留版权声明即可。
