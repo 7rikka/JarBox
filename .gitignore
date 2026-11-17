@@ -1,0 +1,32 @@
+# 依赖
+node_modules/
+
+# 构建产物
+dist/
+src-tauri/target/
+src-tauri/gen/
+*.exe
+*.msi
+*.pdb
+
+# 演示工作区（含真实业务包与大体积 JAR，不进仓库）
+demo-workspace/
+
+# 测试编译产物（源码保留）
+testdata/**/*.jar
+testdata/**/*.class
+
+# 运行日志
+*.log
+
+# 本地验证脚本、截图草稿、临时文件
+.dev/
+.tmp-verify/
+.workbuddy/
+@AutomationLog.txt
+
+# 编辑器与系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
