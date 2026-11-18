@@ -82,7 +82,7 @@ npm run app:build
 
 - `src-tauri/target/release/jarbox.exe` —— 可直接运行的免安装程序，也是唯一的发行物
 
-项目配置了 `bundle.active = false`，构建时不会生成安装包（NSIS 之类的安装器一律不产出）。需要安装程序时自行用 7-Zip 之类工具封装即可。
+项目配置了 `bundle.active = false`，构建时不会生成任何安装包（NSIS 之类的安装器一律不产出），唯一的产物就是这个 exe。
 
 开发模式（前端热更新）：
 
