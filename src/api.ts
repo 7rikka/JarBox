@@ -2,12 +2,14 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type {
   Bootstrap,
+  JarBackups,
   JarEntry,
   JarEntryContent,
   JavaInfo,
   JdkConfig,
   LogFileInfo,
   LogResult,
+  ReplaceResult,
   SaveResult,
   Service,
   ServiceStat,
@@ -33,6 +35,8 @@ export const api = {
     autostart?: boolean;
     stopOnExit?: boolean;
     resumeOnStart?: boolean;
+    importMode?: "copy" | "move";
+    keepJarVersions?: number;
     defaultJdk?: string;
   }) => invoke<SaveResult>("update_settings", { patch }),
   detectJava: (path: string) => invoke<JavaInfo>("detect_java", { path }),
@@ -44,6 +48,16 @@ export const api = {
     invoke<void>("delete_service", { id, deleteLogs }),
   startService: (id: string) => invoke<ServiceView>("start_service", { id }),
   stopService: (id: string) => invoke<void>("stop_service", { id }),
+  /** 停止后重新拉起（不是简单 resume，会等旧进程真正退出） */
+  restartService: (id: string) => invoke<ServiceView>("restart_service", { id }),
+  /** 用新 JAR 覆盖当前版本，旧包备份进同目录 bak */
+  replaceJar: (id: string, newPath: string) =>
+    invoke<ReplaceResult>("replace_jar", { id, newPath }),
+  /** 列出某个服务的历史 JAR 备份 */
+  listJarBackups: (id: string) => invoke<JarBackups>("list_jar_backups", { id }),
+  /** 回滚到指定备份（当前包也会进 bak） */
+  rollbackJar: (id: string, name: string) =>
+    invoke<ReplaceResult>("rollback_jar", { id, name }),
   listJarEntries: (jarPath: string) => invoke<JarEntry[]>("list_jar_entries", { jarPath }),
   readJarEntry: (jarPath: string, name: string) =>
     invoke<JarEntryContent>("read_jar_entry", { jarPath, name }),

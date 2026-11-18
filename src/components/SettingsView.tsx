@@ -6,6 +6,7 @@ import { basename, errText, uid } from "../utils";
 import {
   CheckIcon,
   CubeIcon,
+  FileIcon,
   FolderIcon,
   PlusIcon,
   RefreshIcon,
@@ -19,8 +20,12 @@ type Patch = {
   autostart?: boolean;
   stopOnExit?: boolean;
   resumeOnStart?: boolean;
+  importMode?: "copy" | "move";
+  keepJarVersions?: number;
   defaultJdk?: string;
 };
+
+const KEEP_OPTIONS = [5, 10, 20, 30, 40, 50];
 
 export function SettingsView({
   boot,
@@ -39,6 +44,8 @@ export function SettingsView({
   const [autostart, setAutostart] = useState(boot.store.autostart);
   const [stopOnExit, setStopOnExit] = useState(boot.store.stopOnExit);
   const [resumeOnStart, setResumeOnStart] = useState(boot.store.resumeOnStart);
+  const [importMode, setImportMode] = useState<"copy" | "move">(boot.store.importMode ?? "copy");
+  const [keepJarVersions, setKeepJarVersions] = useState(boot.store.keepJarVersions ?? 10);
   const [newPath, setNewPath] = useState("");
   const [versions, setVersions] = useState<Record<string, JavaInfo>>({});
   const [scanning, setScanning] = useState(false);
@@ -78,6 +85,8 @@ export function SettingsView({
       setAutostart(b.store.autostart);
       setStopOnExit(b.store.stopOnExit);
       setResumeOnStart(b.store.resumeOnStart);
+      setImportMode(b.store.importMode ?? "copy");
+      setKeepJarVersions(b.store.keepJarVersions ?? 10);
       onSaved(b.store, b.autostartEnabled);
     } catch {
       /* 拉取都失败就只能保持现状，别再弹错 */
@@ -103,6 +112,8 @@ export function SettingsView({
         if (patch.autostart !== undefined) setAutostart(res.store.autostart);
         if (patch.stopOnExit !== undefined) setStopOnExit(res.store.stopOnExit);
         if (patch.resumeOnStart !== undefined) setResumeOnStart(res.store.resumeOnStart);
+        if (patch.importMode !== undefined) setImportMode(res.store.importMode ?? "copy");
+        if (patch.keepJarVersions !== undefined) setKeepJarVersions(res.store.keepJarVersions ?? 10);
 
         if (res.autostartWarning) {
           notify(`开机自启没生效：${res.autostartWarning}`, "error");
@@ -257,6 +268,79 @@ export function SettingsView({
               ，运行日志写在同目录的 logs 文件夹中
             </div>
           )}
+        </div>
+      </section>
+
+      <section className="panel">
+        <header className="panel-head">
+          <div className="panel-title">
+            <span className="panel-ico">
+              <FileIcon size={16} />
+            </span>
+            <div>
+              <h2>导入与备份</h2>
+              <p>导入时怎么处理源文件，以及替换 JAR 时保留多少个历史版本</p>
+            </div>
+          </div>
+        </header>
+        <div className="panel-body">
+          <div className="toggle-row">
+            <div>
+              <b>导入 JAR 时</b>
+              <span>
+                复制：保留原位置的文件（默认）。移动：导入成功后删除原文件，适合把散落各处的包收拢到工作目录。
+              </span>
+            </div>
+            <div className="seg">
+              <button
+                className={`chip ${importMode === "copy" ? "chip-primary" : ""}`}
+                onClick={() => {
+                  if (importMode === "copy") return;
+                  setImportMode("copy");
+                  commit({ importMode: "copy" });
+                }}
+              >
+                复制
+              </button>
+              <button
+                className={`chip ${importMode === "move" ? "chip-primary" : ""}`}
+                onClick={() => {
+                  if (importMode === "move") return;
+                  setImportMode("move");
+                  commit({ importMode: "move" });
+                }}
+              >
+                移动
+              </button>
+            </div>
+          </div>
+          <div className="toggle-row">
+            <div>
+              <b>保留历史版本 JAR 个数</b>
+              <span>
+                替换或回滚时旧包会备份到 JAR 同目录的 <code>bak</code> 文件夹，超过这个数量自动清理最旧的。
+                在服务行的「历史版本 / 回滚」里可以随时切回去。
+              </span>
+            </div>
+            <select
+              className="select-mini"
+              value={keepJarVersions}
+              onChange={(e) => {
+                const n = Number(e.target.value);
+                setKeepJarVersions(n);
+                commit({ keepJarVersions: n });
+              }}
+            >
+              {!KEEP_OPTIONS.includes(keepJarVersions) && (
+                <option value={keepJarVersions}>{keepJarVersions} 个</option>
+              )}
+              {KEEP_OPTIONS.map((n) => (
+                <option key={n} value={n}>
+                  {n} 个
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
       </section>
 

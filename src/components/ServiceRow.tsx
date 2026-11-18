@@ -2,11 +2,13 @@ import { useState } from "react";
 import type { ServiceStat, ServiceView } from "../types";
 import { basename, formatBytes, formatDuration, formatTime } from "../utils";
 import {
+  ClockIcon,
   EditIcon,
   FileIcon,
   FolderIcon,
   MoreIcon,
   PlayIcon,
+  RefreshIcon,
   StopIcon,
   TerminalIcon,
   TrashIcon,
@@ -46,6 +48,9 @@ export function ServiceRow({
   busy,
   onStart,
   onStop,
+  onRestart,
+  onReplace,
+  onVersions,
   onLogs,
   onConfig,
   onLocate,
@@ -59,6 +64,9 @@ export function ServiceRow({
   busy?: string;
   onStart: () => void;
   onStop: () => void;
+  onRestart: () => void;
+  onReplace: () => void;
+  onVersions: () => void;
   onLogs: () => void;
   onConfig: () => void;
   onLocate: () => void;
@@ -169,9 +177,20 @@ export function ServiceRow({
 
       <div className="row-actions">
         {running ? (
-          <button className="btn danger" onClick={onStop} disabled={busy === "stopping"}>
-            <StopIcon size={14} /> {busy === "stopping" ? "停止中…" : "停止"}
-          </button>
+          <>
+            <button className="btn danger" onClick={onStop} disabled={busy === "stopping"}>
+              <StopIcon size={14} /> {busy === "stopping" ? "停止中…" : "停止"}
+            </button>
+            <button
+              className="tool-btn"
+              onClick={onRestart}
+              disabled={busy === "restarting" || busy === "stopping"}
+              title="停止后重新启动，用于改了配置或替换 JAR 之后"
+            >
+              <RefreshIcon size={16} />
+              <span>{busy === "restarting" ? "重启中…" : "重启"}</span>
+            </button>
+          </>
         ) : (
           <button className="btn primary" onClick={onStart} disabled={busy === "starting" || warn}>
             <PlayIcon size={14} /> {busy === "starting" ? "启动中…" : "启动"}
@@ -200,6 +219,22 @@ export function ServiceRow({
                   }}
                 >
                   <EditIcon size={15} /> 编辑服务配置
+                </button>
+                <button
+                  onClick={() => {
+                    setMenu(false);
+                    onReplace();
+                  }}
+                >
+                  <FileIcon size={15} /> 替换 JAR 包…
+                </button>
+                <button
+                  onClick={() => {
+                    setMenu(false);
+                    onVersions();
+                  }}
+                >
+                  <ClockIcon size={15} /> 历史版本 / 回滚…
                 </button>
                 <button
                   onClick={() => {

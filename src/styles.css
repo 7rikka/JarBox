@@ -922,6 +922,104 @@ button.chip {
   margin: 0;
   line-height: 1.75;
   color: var(--text-2);
+  /* 替换/回滚的确认文案里有空行分段 */
+  white-space: pre-line;
+}
+
+/* ---------- 设置页：分段按钮与紧凑下拉 ---------- */
+/* 注意要压过 .toggle-row > div 的 flex-direction: column */
+.toggle-row > .seg,
+.seg {
+  display: inline-flex;
+  flex-direction: row;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+.seg .chip {
+  height: 27px;
+  padding: 0 13px;
+  font-size: 12px;
+  max-width: none;
+}
+.select-mini {
+  flex: 0 0 auto;
+  height: 30px;
+  padding: 0 8px;
+  border-radius: 8px;
+  border: 1px solid var(--line-strong);
+  background: #fff;
+  color: var(--text);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.select-mini:focus {
+  outline: none;
+  border-color: var(--primary);
+}
+
+/* ---------- 历史 JAR 版本弹窗 ---------- */
+.ver-current {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--green-soft);
+  margin-bottom: 10px;
+}
+.ver-badge {
+  flex: 0 0 auto;
+  font-size: 11px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: #fff;
+  color: var(--green);
+  border: 1px solid #cdeedd;
+}
+.ver-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+.ver-main b {
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ver-list {
+  max-height: 330px;
+  overflow: auto;
+}
+.ver-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 2px;
+  border-bottom: 1px dashed var(--line);
+}
+.ver-row:last-child {
+  border-bottom: none;
+}
+.ver-row .btn {
+  flex: 0 0 auto;
+  height: 30px;
+  min-width: 108px;
+}
+.ver-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+.ver-foot .muted {
+  margin-left: auto;
+  font-size: 11.5px;
 }
 
 /* ============================ 表单 ============================ */

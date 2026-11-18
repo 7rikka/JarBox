@@ -8,6 +8,7 @@ use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::thread;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
 
@@ -519,13 +520,14 @@ pub(crate) fn apply_autostart(app: &AppHandle, enabled: bool) -> Result<(), Stri
 }
 
 fn import_impl(state: &AppState, paths: Vec<String>) -> Result<Vec<String>, String> {
-    let work_dir = {
+    let (work_dir, import_mode) = {
         let store = state.store.lock().map_err(|e| e.to_string())?;
-        store.work_dir.clone()
+        (store.work_dir.clone(), store.import_mode.clone())
     };
     if work_dir.trim().is_empty() {
         return Err("请先在设置中配置工作目录".to_string());
     }
+    let moving = import_mode == "move";
     let base = PathBuf::from(&work_dir);
     fs::create_dir_all(&base).map_err(|e| format!("创建目录失败: {}", e))?;
 
@@ -548,6 +550,7 @@ fn import_impl(state: &AppState, paths: Vec<String>) -> Result<Vec<String>, Stri
         let mut dir = base.join(&stem);
         let mut dest = dir.join(&file_name);
         let mut n = 2;
+        let mut same_file = false;
         loop {
             if !dest.exists() {
                 break;
@@ -558,6 +561,7 @@ fn import_impl(state: &AppState, paths: Vec<String>) -> Result<Vec<String>, Stri
                 .map(|(a, b)| a == b)
                 .unwrap_or(false);
             if same {
+                same_file = true;
                 break;
             }
             dir = base.join(format!("{} ({})", stem, n));
@@ -567,6 +571,17 @@ fn import_impl(state: &AppState, paths: Vec<String>) -> Result<Vec<String>, Stri
         if !dest.exists() {
             fs::create_dir_all(&dir).map_err(|e| format!("创建目录 {} 失败: {}", dir.display(), e))?;
             fs::copy(&src, &dest).map_err(|e| format!("复制 {} 失败: {}", file_name, e))?;
+        }
+        // 移动模式：复制成功后删掉源文件。
+        // 源和目标本来就是同一个文件时（从工作目录里再导入一次）绝不能删。
+        if moving && !same_file && src != dest {
+            fs::remove_file(&src).map_err(|e| {
+                format!(
+                    "已复制到工作目录，但删除原文件失败：{}（{}）",
+                    src.display(),
+                    e
+                )
+            })?;
         }
         out.push(dest.to_string_lossy().to_string());
     }
@@ -1121,6 +1136,8 @@ pub struct SettingsPatch {
     pub autostart: Option<bool>,
     pub stop_on_exit: Option<bool>,
     pub resume_on_start: Option<bool>,
+    pub import_mode: Option<String>,
+    pub keep_jar_versions: Option<u32>,
     pub default_jdk: Option<String>,
 }
 
@@ -1146,6 +1163,13 @@ fn apply_settings_patch(store: &mut Store, patch: SettingsPatch) -> Option<bool>
     }
     if let Some(v) = patch.resume_on_start {
         store.resume_on_start = v;
+    }
+    if let Some(mode) = patch.import_mode {
+        // 只接受这两个值，避免前端传错把导入行为变成意料之外的状态
+        store.import_mode = if mode == "move" { "move" } else { "copy" }.to_string();
+    }
+    if let Some(n) = patch.keep_jar_versions {
+        store.keep_jar_versions = n.clamp(1, 200);
     }
     if let Some(v) = patch.autostart {
         store.autostart = v;
@@ -1303,6 +1327,600 @@ pub async fn start_service(
 pub async fn stop_service(state: State<'_, AppState>, id: String) -> Result<(), String> {
     stop_impl(&state, &id)
 }
+
+// ---------------------------------------------------------------------------
+// JAR 版本管理：重启、替换、历史版本回滚
+// ---------------------------------------------------------------------------
+
+/// 备份目录：与 JAR 同级的 bak
+fn jar_bak_dir(jar: &Path) -> PathBuf {
+    jar.parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("bak")
+}
+
+/// 等进程真正消失。刚停止的服务还握着 JAR 的文件句柄，这时动文件会失败。
+fn wait_process_exit(pid: u32, timeout: Duration) -> bool {
+    let start = Instant::now();
+    let target = sysinfo::Pid::from_u32(pid);
+    let mut sys = match sysinfo::System::new() {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    loop {
+        sys.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[target]), true);
+        if sys.process(target).is_none() {
+            return true;
+        }
+        if start.elapsed() >= timeout {
+            return false;
+        }
+        thread::sleep(Duration::from_millis(120));
+    }
+}
+
+/// 备份文件名：原名 + 时间戳；同一秒内重复备份时追加序号，避免覆盖
+fn backup_name_for(jar: &Path, dir: &Path) -> String {
+    let stem = jar
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "jar".to_string());
+    let ext = jar
+        .extension()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "jar".to_string());
+    let ts = Local::now().format("%Y%m%d-%H%M%S").to_string();
+    let mut name = format!("{}.{}.{}", stem, ts, ext);
+    let mut n = 2;
+    while dir.join(&name).exists() {
+        name = format!("{}-{}.{}.{}", stem, ts, n, ext);
+        n += 1;
+    }
+    name
+}
+
+/// 是不是同一个文件（大小写、相对路径都不影响判断；文件不存在时返回 false）
+fn same_file(a: &Path, b: &Path) -> bool {
+    fs::canonicalize(a)
+        .ok()
+        .zip(fs::canonicalize(b).ok())
+        .map(|(x, y)| x == y)
+        .unwrap_or(false)
+}
+
+/// 从备份名还原原始包名：`app.20261118-105500.jar` → `app.jar`。
+/// 备份名是「原名.时间戳.扩展名」，所以把时间戳那段去掉就是它当年的文件名。
+fn original_name_from_backup(name: &str) -> String {
+    let dot = match name.rfind('.') {
+        Some(i) if i > 0 && i + 1 < name.len() => i,
+        _ => return name.to_string(),
+    };
+    let (stem, ext) = (&name[..dot], &name[dot + 1..]);
+    // 时间戳固定 8 位日期 + '-' + 6 位时间，共 15 个字符
+    if stem.len() <= 16 {
+        return name.to_string();
+    }
+    let split = stem.len() - 15;
+    let (head, tag) = stem.split_at(split);
+    if !head.ends_with('.') || !is_timestamp_tag(tag) {
+        return name.to_string();
+    }
+    format!("{}.{}", head.trim_end_matches('.'), ext)
+}
+
+fn is_timestamp_tag(tag: &str) -> bool {
+    let b = tag.as_bytes();
+    b.len() == 15
+        && b[8] == b'-'
+        && b[..8].iter().all(|c| c.is_ascii_digit())
+        && b[9..].iter().all(|c| c.is_ascii_digit())
+}
+
+/// 移动文件并重试：进程刚退出时句柄可能还没释放（Windows 特有的坑）
+fn rename_with_retry(from: &Path, to: &Path, timeout: Duration) -> Result<(), String> {
+    let start = Instant::now();
+    loop {
+        match fs::rename(from, to) {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                if start.elapsed() >= timeout {
+                    return Err(format!("移动 {} 失败：{}", from.display(), e));
+                }
+                thread::sleep(Duration::from_millis(150));
+            }
+        }
+    }
+}
+
+/// 内容指纹（FNV-1a 64，流式读，几十 MB 的包也不吃内存）。
+/// 用来判断两个 JAR 是不是同一个版本——文件名会带时间戳，但内容不会变。
+fn file_hash(path: &Path) -> Option<u64> {
+    use std::io::Read;
+    let mut file = fs::File::open(path).ok()?;
+    let mut buf = vec![0u8; 64 * 1024];
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    loop {
+        let n = file.read(&mut buf).ok()?;
+        if n == 0 {
+            return Some(hash);
+        }
+        for &b in &buf[..n] {
+            hash ^= b as u64;
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+}
+
+fn is_jar_name(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    lower.ends_with(".jar") || lower.ends_with(".war")
+}
+
+/// 去重键：内容指纹 + 原始文件名。
+/// 内容一样但名字不同的，在用户眼里就是两个版本（比如把同一个包改名成 v3、v4 试），不能合并；
+/// 只有「内容 + 名字」都一样的两份备份，才是真正重复的那一条。
+fn dedupe_key(name: &str, hash: u64) -> (u64, String) {
+    (hash, original_name_from_backup(name).to_lowercase())
+}
+
+/// 在 dir 里找和 file 完全重复的备份（内容相同，且原始文件名也相同）
+fn find_identical_in(dir: &Path, file: &Path, size: u64, hash: u64) -> Option<PathBuf> {
+    let self_key = dedupe_key(
+        &file
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default(),
+        hash,
+    );
+    let entries = fs::read_dir(dir).ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        if !is_jar_name(&name) || same_file(&path, file) {
+            continue;
+        }
+        if entry.metadata().map(|m| m.len()).unwrap_or(0) != size {
+            continue;
+        }
+        if file_hash(&path).map(|h| dedupe_key(&name, h)) == Some(self_key.clone()) {
+            return Some(path);
+        }
+    }
+    None
+}
+
+/// 把 file 收进 bak。bak 里已经有内容相同的包时不再新增一份——来回切换版本时
+/// 每次都会备份「切换前的包」，如果不去重，同一个版本会越攒越多。
+/// 返回 (备份路径, 是否新建)；新建的那份在失败时需要挪回去，去重的那份不用动。
+fn stash_to_backup(file: &Path, bak_dir: &Path) -> Result<(PathBuf, bool), String> {
+    let len = fs::metadata(file).map(|m| m.len()).unwrap_or(0);
+    if len > 0 {
+        if let Some(hash) = file_hash(file) {
+            if let Some(existing) = find_identical_in(bak_dir, file, len, hash) {
+                // 内容已经在 bak 里了，当前这份直接删掉，不再多占一个版本
+                fs::remove_file(file).map_err(|e| format!("清理旧 JAR 失败：{}", e))?;
+                return Ok((existing, false));
+            }
+        }
+    }
+    let name = backup_name_for(file, bak_dir);
+    let path = bak_dir.join(name);
+    rename_with_retry(file, &path, Duration::from_secs(6))?;
+    Ok((path, true))
+}
+
+/// 备份名里的时间戳：`app.20261118-105500.jar` → `20261118-105500`，取不到就给空串
+fn backup_stamp(name: &str) -> String {
+    let dot = match name.rfind('.') {
+        Some(i) => i,
+        None => return String::new(),
+    };
+    let stem = &name[..dot];
+    if stem.len() < 16 {
+        return String::new();
+    }
+    let split = stem.len() - 15;
+    let tag = &stem[split..];
+    if stem.as_bytes()[split - 1] == b'.' && is_timestamp_tag(tag) {
+        tag.to_string()
+    } else {
+        String::new()
+    }
+}
+
+/// 只保留最近 keep 个备份，顺带合并内容重复的备份，返回被删掉的数量。
+/// 「最近」按备份名里的时间戳排——备份沿用原文件的修改时间，光看 mtime 分不出先后
+/// （同一个 jar 反复备份时 mtime 全都一样）。
+fn prune_backups(dir: &Path, keep: usize) -> usize {
+    let mut items: Vec<(PathBuf, String, std::time::SystemTime)> = Vec::new();
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            if !is_jar_name(&name) {
+                continue;
+            }
+            let modified = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+            let stamp = backup_stamp(&name);
+            items.push((path, stamp, modified));
+        }
+    }
+    // 新的在前（先比备份时间戳，再比 mtime），超出的删掉；
+    // 同一个版本（内容 + 原名都一样）备份了多份时只留最新的一个
+    items.sort_by(|a, b| b.1.cmp(&a.1).then(b.2.cmp(&a.2)));
+    let mut removed = 0;
+    let mut seen: Vec<(u64, String)> = Vec::new();
+    for (path, _, _) in items {
+        let over_limit = seen.len() >= keep.max(1);
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let duplicate = match file_hash(&path) {
+            Some(h) => {
+                let key = dedupe_key(&name, h);
+                if seen.contains(&key) {
+                    true
+                } else {
+                    seen.push(key);
+                    false
+                }
+            }
+            None => false,
+        };
+        if over_limit || duplicate {
+            if fs::remove_file(&path).is_ok() {
+                removed += 1;
+            }
+        }
+    }
+    removed
+}
+
+/// 只做文件层面的替换：当前包移进 bak → 新包按**自己的文件名**放到 dest → 校验大小 → 清理超量备份。
+/// dest 与当前包同名时就是原路径，不同名时由调用方负责把服务的 jar_path 指向新文件。
+/// 返回 (备份路径, 是否新建了备份, 清理数量)；bak 里已有同一版本时不再重复备份。
+/// 与进程/服务无关，方便单测覆盖「备份没丢、回滚可用」这些最容易出错的地方。
+fn swap_files(
+    current: &Path,
+    src: &Path,
+    dest: &Path,
+    keep: usize,
+) -> Result<(PathBuf, bool, usize), String> {
+    if same_file(src, current) {
+        return Err("源文件就是服务当前使用的 JAR".to_string());
+    }
+    let bak_dir = jar_bak_dir(current);
+    fs::create_dir_all(&bak_dir).map_err(|e| format!("创建备份目录失败：{}", e))?;
+
+    // 源文件已经在目标位置（用户把新包放进服务目录后再选它）：只挪旧包，不用复制
+    let src_in_place = same_file(src, dest);
+
+    // 1) 目标位置已被另一个文件占用（目录里留着的同名旧版本）：也收进 bak，不覆盖
+    if !src_in_place && dest != current && dest.is_file() {
+        let _ = stash_to_backup(dest, &bak_dir)?;
+    }
+
+    // 2) 当前包移进 bak（同一分区下 rename 是原子的，比复制快得多）
+    let (backup, created) = if current.is_file() {
+        stash_to_backup(current, &bak_dir)?
+    } else {
+        (PathBuf::new(), false)
+    };
+
+    // 3) 新包就位；失败就把旧包放回去，不能让服务没有 JAR
+    if !src_in_place {
+        let fail = |msg: String| -> String {
+            let _ = fs::remove_file(dest);
+            if backup.is_file() {
+                if created {
+                    let _ = fs::rename(&backup, current);
+                } else {
+                    // 备份没新建（内容是 bak 里已有的那份），复制回去即可
+                    let _ = fs::copy(&backup, current);
+                }
+            }
+            msg
+        };
+        if let Err(e) = fs::copy(src, dest) {
+            return Err(fail(format!("写入新 JAR 失败：{}", e)));
+        }
+        // 校验大小：防止复制中途失败留下半个包
+        let src_len = fs::metadata(src).map(|m| m.len()).unwrap_or(0);
+        let dst_len = fs::metadata(dest).map(|m| m.len()).unwrap_or(0);
+        if src_len == 0 || dst_len != src_len {
+            return Err(fail("写入的新 JAR 大小与原文件不一致，已回滚".to_string()));
+        }
+    }
+
+    // 4) 按保留策略清理旧备份（内容相同的备份合并成一份，不动的版本一个都不少）
+    let pruned = prune_backups(&bak_dir, keep);
+    Ok((backup, created, pruned))
+}
+
+/// 替换 / 回滚的公共流程：
+/// 停服务 → 换文件 → 按需重启
+/// `dest_name` 决定新包在服务目录里叫什么：替换时用新包自己的文件名，
+/// 回滚时用备份名还原出来的原始文件名；都为空则沿用源文件名。
+fn swap_jar_impl(
+    app: &AppHandle,
+    state: &AppState,
+    id: &str,
+    src: &Path,
+    dest_name: Option<&str>,
+) -> Result<ReplaceResult, String> {
+    let service = {
+        let store = state.store.lock().map_err(|e| e.to_string())?;
+        store
+            .services
+            .iter()
+            .find(|s| s.id == id)
+            .cloned()
+            .ok_or_else(|| "服务不存在".to_string())?
+    };
+    let target = PathBuf::from(&service.jar_path);
+    if !src.is_file() {
+        return Err("要使用的 JAR 文件不存在".to_string());
+    }
+    let ext = src
+        .extension()
+        .map(|e| e.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    if ext != "jar" && ext != "war" {
+        return Err("只支持 .jar / .war 文件".to_string());
+    }
+    if target.is_file() && same_file(src, &target) {
+        return Err("选中的就是这个服务当前使用的 JAR，无需替换".to_string());
+    }
+
+    // 新包在服务目录里的目标路径：保留自己的文件名，不再改成旧包的名字
+    let name = match dest_name.map(|n| n.trim()).filter(|n| !n.is_empty()) {
+        Some(n) => n.to_string(),
+        None => src
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default(),
+    };
+    if name.is_empty()
+        || name == "."
+        || name == ".."
+        || name.contains('/')
+        || name.contains('\\')
+        || name.contains(':')
+    {
+        return Err("目标 JAR 文件名不合法".to_string());
+    }
+    let dir = target
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."));
+    fs::create_dir_all(&dir).map_err(|e| format!("创建目录失败：{}", e))?;
+    let dest = dir.join(&name);
+
+    let keep = {
+        let store = state.store.lock().map_err(|e| e.to_string())?;
+        store.keep_jar_versions.max(1) as usize
+    };
+
+    let pid = {
+        let running = state.running.lock().map_err(|e| e.to_string())?;
+        running.get(id).map(|r| r.pid)
+    };
+    let was_running = pid.is_some();
+    if let Some(pid) = pid {
+        stop_impl(state, id)?;
+        if !wait_process_exit(pid, Duration::from_secs(8)) {
+            return Err("服务进程没有在 8 秒内退出，JAR 仍被占用，请稍后重试".to_string());
+        }
+        thread::sleep(Duration::from_millis(200));
+    }
+
+    // 1) 换文件：当前包进 bak，新包按自己的名字就位，顺带清理超量备份
+    let (backup, created, pruned) = swap_files(&target, src, &dest, keep)?;
+
+    // 2) 文件名变了就把服务指向新文件（内存与磁盘都同步，重启才会用上新包）
+    if dest != target {
+        let updated = {
+            match state.store.lock() {
+                Ok(mut store) => match store.services.iter_mut().find(|s| s.id == id) {
+                    Some(s) => {
+                        s.jar_path = dest.to_string_lossy().to_string();
+                        true
+                    }
+                    None => false,
+                },
+                Err(_) => false,
+            }
+        };
+        if updated {
+            // 文件已经换好了，配置写盘失败不影响本次运行，下次保存会纠正
+            let _ = persist(state);
+        }
+    }
+
+    let (restarted, restart_error) = if was_running {
+        match start_impl(app, state, id) {
+            Ok(_) => (true, None),
+            Err(e) => (false, Some(e)),
+        }
+    } else {
+        (false, None)
+    };
+    let view = view_one(state, id).ok_or_else(|| "服务不存在".to_string())?;
+    // 备份可能刚被清理掉（内容和新包一样时没必要留），那就没什么可提示的
+    let kept = backup.is_file();
+    Ok(ReplaceResult {
+        service: view,
+        backup: if kept {
+            backup.to_string_lossy().to_string()
+        } else {
+            String::new()
+        },
+        // 内容是 bak 里已有的那份，没有新增备份
+        deduped: kept && !created,
+        restarted,
+        restart_error,
+        pruned,
+    })
+}
+
+#[tauri::command]
+pub async fn restart_service(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<ServiceView, String> {
+    let pid = {
+        let running = state.running.lock().map_err(|e| e.to_string())?;
+        running.get(&id).map(|r| r.pid)
+    };
+    if let Some(pid) = pid {
+        stop_impl(&state, &id)?;
+        wait_process_exit(pid, Duration::from_secs(8));
+        // 端口释放与文件句柄回收需要一点时间，太急会撞上「地址已占用」
+        thread::sleep(Duration::from_millis(300));
+    }
+    start_impl(&app, &state, &id)
+}
+
+/// 导入一个新 JAR 覆盖当前版本：新包保留自己的文件名，旧包进 bak
+#[tauri::command]
+pub async fn replace_jar(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+    new_path: String,
+) -> Result<ReplaceResult, String> {
+    // dest_name 传 None：直接用新包自己的文件名，不再改成旧包的名字
+    swap_jar_impl(&app, &state, &id, Path::new(new_path.trim()), None)
+}
+
+/// 列出某个服务的历史 JAR 备份（bak 目录）
+#[tauri::command]
+pub async fn list_jar_backups(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<JarBackups, String> {
+    let service = {
+        let (store, _running, _exits) = snapshot(&state);
+        store
+            .services
+            .iter()
+            .find(|s| s.id == id)
+            .cloned()
+            .ok_or_else(|| "服务不存在".to_string())?
+    };
+    let jar = PathBuf::from(&service.jar_path);
+    let dir = jar_bak_dir(&jar);
+    let keep = {
+        let store = state.store.lock().map_err(|e| e.to_string())?;
+        store.keep_jar_versions
+    };
+    // 打开列表时顺手整理一次：合并内容重复的备份、超量的按设置清掉，
+    // 这样界面上看到的条数和磁盘上的文件始终是一回事
+    if dir.is_dir() {
+        prune_backups(&dir, keep.max(1) as usize);
+    }
+    let mut items: Vec<JarBackup> = Vec::new();
+    if dir.is_dir() {
+        if let Ok(entries) = fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if !path.is_file() {
+                    continue;
+                }
+                let name = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                let lower = name.to_lowercase();
+                if !(lower.ends_with(".jar") || lower.ends_with(".war")) {
+                    continue;
+                }
+                let meta = entry.metadata().ok();
+                items.push(JarBackup {
+                    name,
+                    path: path.to_string_lossy().to_string(),
+                    size: meta.as_ref().map(|m| m.len()).unwrap_or(0),
+                    modified: meta
+                        .and_then(|m| m.modified().ok())
+                        .and_then(|t| t.duration_since(std::time::SystemTime::UNIX_EPOCH).ok())
+                        .map(|d| d.as_millis() as i64)
+                        .unwrap_or(0),
+                });
+            }
+        }
+    }
+    // 新的在前面，方便一眼看到最近的几个版本
+    items.sort_by(|a, b| b.modified.cmp(&a.modified));
+    let current_meta = fs::metadata(&jar).ok();
+    Ok(JarBackups {
+        current_name: jar
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default(),
+        current_size: current_meta.as_ref().map(|m| m.len()).unwrap_or(0),
+        current_modified: current_meta
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(std::time::SystemTime::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0),
+        current_exists: jar.is_file(),
+        dir: dir.to_string_lossy().to_string(),
+        keep,
+        items,
+    })
+}
+
+/// 回滚到某个历史备份：当前包同样会先进 bak，来回切换不会丢版本
+#[tauri::command]
+pub async fn rollback_jar(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+    name: String,
+) -> Result<ReplaceResult, String> {
+    let trimmed = name.trim();
+    // 只接受纯文件名，挡住 ../ 之类的路径穿越
+    if trimmed.is_empty() || trimmed.contains('/') || trimmed.contains('\\') || trimmed.contains("..")
+    {
+        return Err("备份文件名不合法".to_string());
+    }
+    let service = {
+        let (store, _running, _exits) = snapshot(&state);
+        store
+            .services
+            .iter()
+            .find(|s| s.id == id)
+            .cloned()
+            .ok_or_else(|| "服务不存在".to_string())?
+    };
+    let dir = jar_bak_dir(Path::new(&service.jar_path));
+    let src = dir.join(trimmed);
+    if !src.is_file() {
+        return Err("备份文件不存在".to_string());
+    }
+    // 备份名带时间戳，恢复时用它的原始文件名（app.20261118-105500.jar → app.jar）
+    let dest_name = original_name_from_backup(trimmed);
+    swap_jar_impl(&app, &state, &id, &src, Some(&dest_name))
+}
+
 
 #[tauri::command]
 pub async fn list_jar_entries(jar_path: String) -> Result<Vec<JarEntry>, String> {
@@ -1542,8 +2160,257 @@ mod tests {
             autostart: false,
             stop_on_exit: true,
             resume_on_start: true,
+            import_mode: "copy".to_string(),
+            keep_jar_versions: 10,
             default_jdk: "a".to_string(),
         }
+    }
+
+    #[test]
+    fn backup_name_never_collides() {
+        let dir = std::env::temp_dir().join(format!("jarbox-bak-{}", Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let jar = dir.join("demo.jar");
+        let first = backup_name_for(&jar, &dir);
+        assert!(first.starts_with("demo."), "{}", first);
+        assert!(first.ends_with(".jar"), "{}", first);
+        fs::write(dir.join(&first), b"x").unwrap();
+        // 同一秒内再备份一次，名字必须不同，否则会覆盖掉上一个版本
+        let second = backup_name_for(&jar, &dir);
+        assert_ne!(first, second);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn prune_keeps_the_newest_backups() {
+        let dir = std::env::temp_dir().join(format!("jarbox-prune-{}", Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        for i in 0..6 {
+            fs::write(dir.join(format!("demo.{}.jar", i)), format!("v{}", i)).unwrap();
+            // 拉开修改时间，避免同一时间戳导致排序不稳定
+            thread::sleep(Duration::from_millis(30));
+        }
+        let removed = prune_backups(&dir, 2);
+        assert_eq!(removed, 4);
+        let left: Vec<String> = fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(left.len(), 2);
+        // 最新的两个（4 和 5）应当留下
+        assert!(left.iter().any(|n| n == "demo.5.jar"), "{:?}", left);
+        assert!(left.iter().any(|n| n == "demo.4.jar"), "{:?}", left);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn prune_drops_duplicate_content() {
+        let dir = std::env::temp_dir().join(format!("jarbox-prune-dup-{}", Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        // 同一个版本被备份了两次（内容完全相同），旧的那份应当清掉
+        fs::write(dir.join("app.20260101-000001.jar"), b"same").unwrap();
+        thread::sleep(Duration::from_millis(30));
+        fs::write(dir.join("app.20260101-000002.jar"), b"same").unwrap();
+        thread::sleep(Duration::from_millis(30));
+        fs::write(dir.join("app.20260101-000003.jar"), b"other").unwrap();
+
+        let removed = prune_backups(&dir, 10);
+        assert_eq!(removed, 1);
+        let left: Vec<String> = fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(left.len(), 2, "{:?}", left);
+        // 留的是较新的那份
+        assert!(left.iter().any(|n| n == "app.20260101-000002.jar"), "{:?}", left);
+        assert!(!left.iter().any(|n| n == "app.20260101-000001.jar"), "{:?}", left);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn prune_only_merges_truly_identical_entries() {
+        // 用户拿同一份 jar 改个名当新版本试：内容相同但名字不同，是用户眼里的两个版本，必须都留着；
+        // 只有「内容 + 原名」都一样的，才是重复的那一条
+        let root = std::env::temp_dir().join(format!("jarbox-prune-same-{}", Uuid::new_v4()));
+        let bak = root.join("bak");
+        fs::create_dir_all(&bak).unwrap();
+        let current = root.join("app-v4.jar");
+        fs::write(&current, b"SAME-BYTES").unwrap();
+        fs::write(bak.join("app-v3.20260101-000001.jar"), b"SAME-BYTES").unwrap();
+        fs::write(bak.join("app-v4.20260101-000002.jar"), b"SAME-BYTES").unwrap();
+        fs::write(bak.join("app-v3.20260101-000003.jar"), b"SAME-BYTES").unwrap();
+
+        let removed = prune_backups(&bak, 10);
+        assert_eq!(removed, 1, "只合并那条真正重复的");
+        assert!(
+            bak.join("app-v3.20260101-000003.jar").is_file(),
+            "同名版本留最新的那条"
+        );
+        assert!(
+            bak.join("app-v4.20260101-000002.jar").is_file(),
+            "名字不同的版本不能被合并"
+        );
+        assert!(current.is_file(), "当前包不能被动");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn swap_files_backs_up_and_rolls_back() {
+        let dir = std::env::temp_dir().join(format!("jarbox-swap-{}", Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("demo.jar");
+        fs::write(&target, b"VERSION-1").unwrap();
+
+        // 第一次替换：同名包，旧包进 bak，新包落到原路径
+        let new1 = dir.join("new1.jar");
+        fs::write(&new1, b"VERSION-2-longer").unwrap();
+        let (backup, created, pruned) = swap_files(&target, &new1, &target, 5).unwrap();
+        assert_eq!(pruned, 0);
+        assert!(created);
+        assert_eq!(fs::read(&target).unwrap(), b"VERSION-2-longer");
+        assert_eq!(fs::read(&backup).unwrap(), b"VERSION-1");
+
+        // 用备份回滚：内容换回去，且备份文件本身不能被搬走，否则来回切换会丢版本
+        let (backup2, _, _) = swap_files(&target, &backup, &target, 5).unwrap();
+        assert_eq!(fs::read(&target).unwrap(), b"VERSION-1");
+        assert!(backup.is_file(), "回滚后旧备份必须仍然存在");
+        assert_eq!(fs::read(&backup2).unwrap(), b"VERSION-2-longer");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn switching_back_and_forth_does_not_duplicate_backups() {
+        let root = std::env::temp_dir().join(format!("jarbox-dedupe-{}", Uuid::new_v4()));
+        let svc = root.join("svc");
+        fs::create_dir_all(&svc).unwrap();
+        let v1 = svc.join("app.jar");
+        let v2 = svc.join("app-v2.jar");
+        fs::write(&v1, b"VERSION-1").unwrap();
+        fs::write(&v2, b"VERSION-2").unwrap();
+        let bak = svc.join("bak");
+
+        // 把 current 换成 dir 里内容为 content 的那个包
+        let find = |content: &[u8]| -> PathBuf {
+            for e in fs::read_dir(&bak).unwrap().flatten() {
+                let p = e.path();
+                if fs::read(&p).unwrap() == content {
+                    return p;
+                }
+            }
+            panic!("bak 里找不到对应版本");
+        };
+
+        // 第一次：v1 → v2（新包本来就在服务目录里，直接顶掉）
+        swap_files(&v1, &v2, &v2, 50).unwrap();
+        assert_eq!(fs::read(&v2).unwrap(), b"VERSION-2");
+
+        // 来回切 3 轮：bak 里最多就是这两个版本，不该越攒越多
+        for round in 0..3 {
+            let src = find(b"VERSION-1");
+            swap_files(&v2, &src, &v1, 50).unwrap();
+            assert_eq!(fs::read(&v1).unwrap(), b"VERSION-1");
+            assert_eq!(
+                fs::read_dir(&bak).unwrap().flatten().count(),
+                2,
+                "第 {} 轮切回 v1 后 bak 条目数",
+                round + 1
+            );
+
+            let src = find(b"VERSION-2");
+            swap_files(&v1, &src, &v2, 50).unwrap();
+            assert_eq!(fs::read(&v2).unwrap(), b"VERSION-2");
+            assert_eq!(
+                fs::read_dir(&bak).unwrap().flatten().count(),
+                2,
+                "第 {} 轮切回 v2 后 bak 条目数",
+                round + 1
+            );
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn swap_files_keeps_the_new_file_name() {
+        let root = std::env::temp_dir().join(format!("jarbox-keep-{}", Uuid::new_v4()));
+        let svc = root.join("svc");
+        let incoming = root.join("incoming");
+        fs::create_dir_all(&svc).unwrap();
+        fs::create_dir_all(&incoming).unwrap();
+        let current = svc.join("app.jar");
+        fs::write(&current, b"V1").unwrap();
+        let src = incoming.join("app-2.0.jar");
+        fs::write(&src, b"V2-new-build").unwrap();
+
+        // 新包文件名不同：就按它自己的名字落地，不能被迫改成 app.jar
+        let dest = svc.join("app-2.0.jar");
+        let (backup, _, _) = swap_files(&current, &src, &dest, 5).unwrap();
+        assert!(!current.exists(), "旧名字不该再留在服务目录里");
+        assert_eq!(fs::read(&dest).unwrap(), b"V2-new-build");
+        assert_eq!(fs::read(&backup).unwrap(), b"V1");
+        // 替换是复制语义，用户选的源文件不能被搬走
+        assert!(src.is_file());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn swap_files_reuses_a_file_already_in_place() {
+        // 用户先把新包放进服务目录，再选它替换：不能自己复制自己，也不能把它当旧包挪走
+        let dir = std::env::temp_dir().join(format!("jarbox-inplace-{}", Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let current = dir.join("app.jar");
+        fs::write(&current, b"V1").unwrap();
+        let src = dir.join("app-v2.jar");
+        fs::write(&src, b"V2").unwrap();
+
+        let (backup, _, _) = swap_files(&current, &src, &src, 5).unwrap();
+        assert_eq!(fs::read(&src).unwrap(), b"V2");
+        assert_eq!(fs::read(&backup).unwrap(), b"V1");
+        assert!(!current.exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rollback_restores_the_original_file_name() {
+        assert_eq!(
+            original_name_from_backup("app.20261118-105500.jar"),
+            "app.jar"
+        );
+        assert_eq!(
+            original_name_from_backup("order-service.20261118-105500.war"),
+            "order-service.war"
+        );
+        assert_eq!(
+            original_name_from_backup("my.app.20261118-105500.jar"),
+            "my.app.jar"
+        );
+        // 不像备份名的原样返回
+        assert_eq!(original_name_from_backup("app-v2.jar"), "app-v2.jar");
+        assert_eq!(original_name_from_backup("app.jar"), "app.jar");
+    }
+
+    #[test]
+    fn swap_files_prunes_old_backups() {
+        let dir = std::env::temp_dir().join(format!("jarbox-swap-prune-{}", Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("demo.jar");
+        fs::write(&target, b"v0").unwrap();
+        for i in 1..=4 {
+            let src = dir.join(format!("new{}.jar", i));
+            fs::write(&src, format!("content-{}", i)).unwrap();
+            let (_, _, pruned) = swap_files(&target, &src, &target, 2).unwrap();
+            if i >= 3 {
+                assert!(pruned >= 1, "第 {} 次替换后应清理旧备份", i);
+            }
+            let left = fs::read_dir(dir.join("bak"))
+                .unwrap()
+                .flatten()
+                .filter(|e| e.path().is_file())
+                .count();
+            assert_eq!(left, std::cmp::min(i as usize, 2), "第 {} 次后 bak 数量", i);
+        }
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

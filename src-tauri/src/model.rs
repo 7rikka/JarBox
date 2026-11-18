@@ -50,12 +50,26 @@ pub struct Store {
     /// 启动时恢复「上次退出时仍在运行」的服务
     #[serde(default = "default_true")]
     pub resume_on_start: bool,
+    /// 导入 JAR 的方式：copy（复制，保留源文件）/ move（移动，删除源文件）
+    #[serde(default = "default_import_mode")]
+    pub import_mode: String,
+    /// 替换 JAR 时在 bak 目录里保留的历史版本个数
+    #[serde(default = "default_keep_jar_versions")]
+    pub keep_jar_versions: u32,
     #[serde(default)]
     pub default_jdk: String,
 }
 
 fn default_true() -> bool {
     true
+}
+
+fn default_import_mode() -> String {
+    "copy".to_string()
+}
+
+fn default_keep_jar_versions() -> u32 {
+    10
 }
 
 impl Default for Store {
@@ -67,6 +81,8 @@ impl Default for Store {
             autostart: true,
             stop_on_exit: true,
             resume_on_start: true,
+            import_mode: default_import_mode(),
+            keep_jar_versions: default_keep_jar_versions(),
             default_jdk: String::new(),
         }
     }
@@ -167,6 +183,49 @@ pub struct ServiceView {
     pub jdk_path: String,
     pub jdk_ok: bool,
     pub cmdline: String,
+}
+
+/// 替换 JAR 的结果：新包已就位、旧包已备份
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplaceResult {
+    pub service: ServiceView,
+    /// 备份文件的完整路径（位于 JAR 同目录的 bak 子目录）
+    pub backup: String,
+    /// 替换前服务是否在运行；为 true 时替换后已自动重启
+    pub restarted: bool,
+    /// 替换成功但重启失败时的原因
+    pub restart_error: Option<String>,
+    /// 因超过「保留历史版本个数」而被清理掉的旧备份数量
+    pub pruned: usize,
+    /// bak 里已存在同一版本、这次没有再新增备份
+    #[serde(default)]
+    pub deduped: bool,
+}
+
+/// 一个历史 JAR 备份（bak 目录里的文件）
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct JarBackup {
+    pub name: String,
+    pub path: String,
+    pub size: u64,
+    /// 毫秒时间戳
+    pub modified: i64,
+}
+
+/// 某个服务的版本清单：当前包 + 历史备份
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct JarBackups {
+    pub current_name: String,
+    pub current_size: u64,
+    pub current_modified: i64,
+    pub current_exists: bool,
+    pub dir: String,
+    /// 当前设置的保留个数
+    pub keep: u32,
+    pub items: Vec<JarBackup>,
 }
 
 #[derive(Serialize, Clone, Debug)]

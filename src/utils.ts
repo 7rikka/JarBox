@@ -44,6 +44,12 @@ export function dirname(p: string): string {
   return idx > 0 ? p.slice(0, idx) : p;
 }
 
+/** 备份名里的时间戳：`app.20261118-105500.jar` → `app.jar`（与后端 original_name_from_backup 对齐） */
+export function originalJarName(name: string): string {
+  const m = name.match(/^(.+)\.(\d{8}-\d{6})\.(jar|war)$/i);
+  return m ? `${m[1]}.${m[3]}` : name;
+}
+
 export function lineLevel(line: string): string | null {
   const l = line.toLowerCase();
   if (l.includes("error") || l.includes("exception") || l.includes("fatal")) return "error";

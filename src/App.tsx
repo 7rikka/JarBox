@@ -3,16 +3,18 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
 import { api, onAutoStart, onServiceExit } from "./api";
 import type { Bootstrap, Service, ServiceStat, ServiceView, Store } from "./types";
-import { basename, errText, formatDuration } from "./utils";
+import { basename, dirname, errText, formatDuration, originalJarName } from "./utils";
 import { ServiceRow } from "./components/ServiceRow";
 import { ServiceDialog } from "./components/ServiceDialog";
 import { SettingsView } from "./components/SettingsView";
 import { LogViewer } from "./components/LogViewer";
 import { JarInspector } from "./components/JarInspector";
+import { JarVersionsDialog } from "./components/JarVersionsDialog";
 import { Modal } from "./components/Modal";
 import {
   AlertIcon,
   CubeIcon,
+  FileIcon,
   FolderIcon,
   PlusIcon,
   RefreshIcon,
@@ -45,6 +47,8 @@ export default function App() {
   const [dialog, setDialog] = useState<{ service: Service | null } | undefined>();
   const [logTarget, setLogTarget] = useState<ServiceView | null>(null);
   const [jarTarget, setJarTarget] = useState<ServiceView | null>(null);
+  const [versionsTarget, setVersionsTarget] = useState<ServiceView | null>(null);
+  const [rollingBack, setRollingBack] = useState(false);
   const [busy, setBusy] = useState<Record<string, string>>({});
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [dragging, setDragging] = useState(false);
@@ -53,7 +57,7 @@ export default function App() {
         title: string;
         message: string;
         danger?: boolean;
-        kind?: "delete" | "stop";
+        kind?: "delete" | "stop" | "replace" | "restart";
         okText?: string;
         onOk: () => void;
       }
@@ -181,7 +185,8 @@ export default function App() {
       }
       try {
         const list = await api.importJars(jars);
-        notify(`已导入 ${list.length} 个 JAR，已按 JAR 名创建独立目录`);
+        const mode = bootRef.current?.store.importMode === "move" ? "移动" : "复制";
+        notify(`已${mode} ${list.length} 个 JAR，并按 JAR 名创建了独立目录`);
         await refreshJars();
         setDialog({ service: blankService(list[0], bootRef.current?.store.defaultJdk || "") });
       } catch (e) {
@@ -256,6 +261,135 @@ export default function App() {
       setBusy((b) => {
         const n = { ...b };
         delete n[id];
+        return n;
+      });
+    }
+  }
+
+  async function restart(id: string) {
+    setBusy((b) => ({ ...b, [id]: "restarting" }));
+    try {
+      await api.restartService(id);
+      await refreshServices();
+      notify("服务已重启");
+    } catch (e) {
+      notify(errText(e), "error");
+    } finally {
+      setBusy((b) => {
+        const n = { ...b };
+        delete n[id];
+        return n;
+      });
+    }
+  }
+
+  function askRestart(svc: ServiceView) {
+    const uptime = svc.startedAt
+      ? `它已运行 ${formatDuration(Date.now() - svc.startedAt)}，`
+      : "";
+    setConfirm({
+      title: "重启服务",
+      message: `确定重启「${svc.name}」吗？${uptime}当前进程会被结束，再按同样的配置重新拉起，正在处理的请求会中断。`,
+      kind: "restart",
+      okText: "重启服务",
+      onOk: () => void restart(svc.id),
+    });
+  }
+
+  /** 选一个新 JAR，确认后用 swap 流程替换当前版本 */
+  async function pickAndReplace(svc: ServiceView) {
+    const sel = await open({
+      multiple: false,
+      filters: [{ name: "Java 应用包", extensions: ["jar", "war"] }],
+      defaultPath: dirname(svc.jarPath),
+    });
+    if (!sel || typeof sel !== "string") return;
+    const next = basename(sel);
+    const current = basename(svc.jarPath);
+    const willRename = next !== current;
+    setConfirm({
+      title: "替换 JAR 包",
+      message:
+        `用「${next}」替换「${current}」？\n\n` +
+        `当前 JAR 会先备份到同目录的 bak 文件夹。` +
+        (willRename
+          ? `新包保留自己的文件名，服务配置会自动指向「${next}」。`
+          : `文件名相同，直接覆盖原位置。`) +
+        (svc.status === "running" ? "服务会先停止，替换完成后自动重启。" : "服务当前未运行，替换后不会自动启动。"),
+      kind: "replace",
+      okText: "确认替换",
+      onOk: () => void doReplace(svc, sel),
+    });
+  }
+
+  async function doReplace(svc: ServiceView, path: string) {
+    setBusy((b) => ({ ...b, [svc.id]: "replacing" }));
+    try {
+      const res = await api.replaceJar(svc.id, path);
+      await refreshServices();
+      void refreshJars();
+      const parts = res.backup
+        ? [
+            res.deduped
+              ? `已替换 JAR，原版本已在 bak 中（${basename(res.backup)}），未重复备份`
+              : `已替换 JAR，原版本备份为 ${basename(res.backup)}`,
+          ]
+        : ["已替换 JAR"];
+      const nowName = basename(res.service.jarPath);
+      if (nowName !== basename(svc.jarPath)) parts.push(`服务已指向 ${nowName}`);
+      if (res.restarted) parts.push("服务已重启");
+      if (res.pruned > 0) parts.push(`清理了 ${res.pruned} 个更早的备份`);
+      notify(parts.join("，"));
+      if (res.restartError) {
+        notify(`替换完成，但自动重启失败：${res.restartError}`, "error");
+      }
+    } catch (e) {
+      notify(errText(e), "error");
+    } finally {
+      setBusy((b) => {
+        const n = { ...b };
+        delete n[svc.id];
+        return n;
+      });
+    }
+  }
+
+  function askRollback(svc: ServiceView, name: string) {
+    const restored = originalJarName(name);
+    setConfirm({
+      title: "切换到历史版本",
+      message:
+        `把「${name}」恢复为当前 JAR？\n\n` +
+        `恢复后的文件名是「${restored}」，切换前的版本也会存进 bak，所以这一步可以再切回来。` +
+        (svc.status === "running" ? "服务会先停止，切换完成后自动重启。" : "服务当前未运行，切换后不会自动启动。"),
+      kind: "replace",
+      okText: "切换到该版本",
+      onOk: () => void doRollback(svc, name),
+    });
+  }
+
+  async function doRollback(svc: ServiceView, name: string) {
+    setRollingBack(true);
+    setBusy((b) => ({ ...b, [svc.id]: "replacing" }));
+    try {
+      const res = await api.rollbackJar(svc.id, name);
+      await refreshServices();
+      void refreshJars();
+      setVersionsTarget(null);
+      const restored = basename(res.service.jarPath);
+      const parts = [`已切换到 ${restored}`];
+      if (res.restarted) parts.push("服务已重启");
+      notify(parts.join("，"));
+      if (res.restartError) {
+        notify(`切换完成，但自动重启失败：${res.restartError}`, "error");
+      }
+    } catch (e) {
+      notify(errText(e), "error");
+    } finally {
+      setRollingBack(false);
+      setBusy((b) => {
+        const n = { ...b };
+        delete n[svc.id];
         return n;
       });
     }
@@ -464,6 +598,9 @@ export default function App() {
                       busy={busy[s.id]}
                       onStart={() => void start(s.id)}
                       onStop={() => askStop(s)}
+                      onRestart={() => askRestart(s)}
+                      onReplace={() => void pickAndReplace(s)}
+                      onVersions={() => setVersionsTarget(s)}
                       onLogs={() => setLogTarget(s)}
                       onConfig={() => setJarTarget(s)}
                       onLocate={() =>
@@ -505,7 +642,11 @@ export default function App() {
           <div className="drop-box">
             <CubeIcon size={34} />
             <h2>松开以导入 JAR</h2>
-            <p>文件会被复制到工作目录下以 JAR 命名的独立目录，并自动进入新建服务流程</p>
+            <p>
+              文件会被{boot.store.importMode === "move" ? "移动" : "复制"}到工作目录下以 JAR 命名的独立目录
+              {boot.store.importMode === "move" ? "（原位置的文件会被移走）" : ""}
+              ，并自动进入新建服务流程
+            </p>
           </div>
         </div>
       )}
@@ -551,10 +692,29 @@ export default function App() {
         />
       )}
 
+      {versionsTarget && (
+        <JarVersionsDialog
+          service={versionsTarget}
+          busy={rollingBack}
+          onClose={() => setVersionsTarget(null)}
+          onRollback={(name) => askRollback(versionsTarget, name)}
+        />
+      )}
+
       {confirm && (
         <Modal
           title={confirm.title}
-          icon={confirm.kind === "stop" ? <StopIcon size={17} /> : <TrashIcon size={17} />}
+          icon={
+            confirm.kind === "stop" ? (
+              <StopIcon size={17} />
+            ) : confirm.kind === "restart" ? (
+              <RefreshIcon size={17} />
+            ) : confirm.kind === "replace" ? (
+              <FileIcon size={17} />
+            ) : (
+              <TrashIcon size={17} />
+            )
+          }
           onClose={() => setConfirm(null)}
           width={470}
           footer={

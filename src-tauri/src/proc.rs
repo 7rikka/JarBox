@@ -283,16 +283,25 @@ pub fn reveal(path: &str) -> Result<(), String> {
     }
     #[cfg(windows)]
     {
-        let mut cmd = if p.is_dir() {
-            let mut c = Command::new("explorer");
-            c.arg(path);
-            c
+        use std::os::windows::process::CommandExt;
+        // explorer.exe 自己解析命令行：交给 std 自动加引号时，
+        // 带空格的路径会让整段 `/select,C:\a b\x.jar` 被一对引号包住，
+        // explorer 认不出这个参数，就会退回默认目录（我的文档）。
+        // 所以用 raw_arg 只给路径本身加引号，并统一成正斜杠 → 反斜杠。
+        let mut target = path.replace('/', "\\");
+        if p.is_dir() {
+            while target.len() > 3 && target.ends_with('\\') {
+                target.pop();
+            }
+        }
+        let mut cmd = Command::new("explorer");
+        if p.is_dir() {
+            cmd.raw_arg(format!("\"{}\"", target));
         } else {
-            let mut c = Command::new("explorer");
-            c.arg(format!("/select,{}", path));
-            c
-        };
-        let _ = cmd.spawn().map_err(|e| format!("打开资源管理器失败: {}", e))?;
+            cmd.raw_arg(format!("/select,\"{}\"", target));
+        }
+        cmd.spawn()
+            .map_err(|e| format!("打开资源管理器失败: {}", e))?;
         Ok(())
     }
     #[cfg(target_os = "macos")]

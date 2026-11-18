@@ -40,7 +40,42 @@ export interface Store {
   autostart: boolean;
   stopOnExit: boolean;
   resumeOnStart: boolean;
+  /** 导入 JAR 的方式：复制保留源文件，移动则导入后删除源文件 */
+  importMode: "copy" | "move";
+  /** 替换 JAR 时 bak 目录里保留的历史版本个数 */
+  keepJarVersions: number;
   defaultJdk: string;
+}
+
+/** 一个历史 JAR 备份 */
+export interface JarBackup {
+  name: string;
+  path: string;
+  size: number;
+  /** 毫秒时间戳 */
+  modified: number;
+}
+
+/** 某个服务的版本清单：当前包 + 历史备份 */
+export interface JarBackups {
+  currentName: string;
+  currentSize: number;
+  currentModified: number;
+  currentExists: boolean;
+  dir: string;
+  keep: number;
+  items: JarBackup[];
+}
+
+/** 替换 / 回滚 JAR 的结果 */
+export interface ReplaceResult {
+  service: ServiceView;
+  backup: string;
+  restarted: boolean;
+  restartError: string | null;
+  pruned: number;
+  /** bak 里已有同一版本，这次没有新增备份 */
+  deduped: boolean;
 }
 
 export interface Bootstrap {
