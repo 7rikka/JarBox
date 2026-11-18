@@ -6,7 +6,7 @@
 
 一个跑在 Windows 上的本地 JAR 服务管理器。把平时散落在各个目录、靠 `java -jar` 手动启动的服务收进一个窗口：导入、启动、看日志、查端口、管 JDK，都在一起。
 
-基于 Tauri v2（Rust）+ React 构建，安装包只有 2 MB 出头，免安装运行也不需要 JRE 之外的东西。
+基于 Tauri v2（Rust）+ React 构建，发行物只有一个约 8 MB 的免安装 exe，不需要除 JRE 之外的任何额外依赖。
 
 当前版本 `1.0.0`，是项目开源后的第一个版本，以 [MIT 许可](LICENSE)发布。
 
@@ -61,12 +61,13 @@
 
 ### 直接使用
 
-1. 双击 `JarBox.exe`（免安装，可放在任意目录）。
-2. 打开「设置」，配置工作目录和至少一个 JDK。
-3. 回到服务列表，点「导入 JAR」或把 JAR 拖进窗口。
-4. 点「启动」，日志和端口会自己出来。
+1. 下载 `JarBox-1.0.0-portable.exe`（或从源码构建后取 `jarbox.exe`）。
+2. 双击运行 —— 免安装，可以放在任意目录，比如 `D:\jarbox\`。
+3. 打开「设置」，配置工作目录和至少一个 JDK。
+4. 回到服务列表，点「导入 JAR」或把 JAR 拖进窗口。
+5. 点「启动」，日志和端口会自己出来。
 
-安装版：运行 `JarBox_1.0.0_x64-setup.exe`。
+本项目只提供便携版单文件，**不提供安装包**：没有安装向导，不写注册表卸载项，删除 exe 就是彻底卸载。配置和日志都放在 `%APPDATA%\com.jarbox.app` 与你自己指定的工作目录里，删 exe 不会丢配置。
 
 ### 从源码构建
 
@@ -79,8 +80,9 @@ npm run app:build
 
 产物：
 
-- `src-tauri/target/release/jarbox.exe` —— 可直接运行的免安装程序
-- `src-tauri/target/release/bundle/nsis/JarBox_1.0.0_x64-setup.exe` —— NSIS 安装包
+- `src-tauri/target/release/jarbox.exe` —— 可直接运行的免安装程序，也是唯一的发行物
+
+项目配置了 `bundle.active = false`，构建时不会生成安装包（NSIS 之类的安装器一律不产出）。需要安装程序时自行用 7-Zip 之类工具封装即可。
 
 开发模式（前端热更新）：
 
@@ -160,11 +162,15 @@ npm run app:dev
 
 取决于「退出时停止服务」这个开关。默认开启，退出时会结束进程树；关掉后进程保留，下次启动自动接管。
 
+**Q：怎么卸载**
+
+没有安装程序，也就没有「卸载向导」。托盘图标右键 →「退出」，然后删掉 exe 就行。配置在 `%APPDATA%\com.jarbox.app`，服务与日志在你自己的工作目录里，想彻底清干净就把这两处一并删掉；如果开过「开机自启」，还需要在设置里把它关掉。
+
 ## 技术栈
 
 - **后端**：Rust + Tauri v2，`sysinfo` 读进程信息，`winreg` 写启动项，Win32 FFI 抢前台焦点
 - **前端**：React 18 + TypeScript + Vite，无 UI 框架，样式手写
-- **打包**：NSIS；图标由 `scripts/gen-icon.mjs` 直接生成 PNG，无第三方依赖
+- **发行**：只有一个便携版 exe，不做安装包；图标由 `scripts/gen-icon.mjs` 直接生成 PNG，无第三方依赖
 
 ## 目录结构
 
