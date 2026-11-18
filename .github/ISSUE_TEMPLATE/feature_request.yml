@@ -1,0 +1,56 @@
+name: 功能建议
+description: 提出一个想法，或者指出现有流程别扭的地方
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        提建议不必写得很正式，说清「现在哪里别扭、你希望变成什么样」就够了。
+        如果只是使用上的疑问，建议先看 [常见问题](https://github.com/7rikka/JarBox#常见问题)，或者到 Discussions 聊聊。
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: 现在的问题
+      description: 描述你遇到的场景，而不是直接给方案
+      placeholder: |
+        同时跑 5 个服务时，想快速判断哪个占内存最多，得一行一行看，
+        希望能在列表里按内存或 CPU 排序。
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 设想的做法
+      description: 有具体想法就写，没有也可以只写问题
+      placeholder: 点击表头切换排序，或者加一个「按内存排序」的下拉
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 你现在的替代办法
+      description: 现在是怎么绕过这个问题的？这能帮助判断优先级
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: 影响范围
+      description: 这个改动大概会动到哪里
+      options:
+        - 只影响一个界面细节
+        - 涉及服务启停 / 进程管理
+        - 涉及配置结构与数据文件
+        - 涉及打包与发布
+        - 不确定
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 已搜索现有 Issue，没有重复建议
+          required: true

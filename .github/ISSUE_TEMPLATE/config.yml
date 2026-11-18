@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 常见问题（README）
+    url: "https://github.com/7rikka/JarBox#常见问题"
+    about: 端口一直显示「—」、被 360 拦截、退出后 Java 还在跑，这几类情况已有答案
+  - name: 搜索已有 Issue
+    url: "https://github.com/7rikka/JarBox/issues?q=is%3Aissue"
+    about: 提交前先搜一下，可能已经有人遇到并解决了

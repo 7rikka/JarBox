@@ -2,7 +2,15 @@
   <img src="src-tauri/icons/128x128.png" width="96" height="96" alt="JarBox 图标">
 </p>
 
-# JarBox
+<h1 align="center">JarBox</h1>
+
+<p align="center">
+  <a href="https://github.com/7rikka/JarBox/releases/latest"><img alt="最新版本" src="https://img.shields.io/github/v/release/7rikka/JarBox?color=4F46E5&label=release"></a>
+  <a href="LICENSE"><img alt="许可证" src="https://img.shields.io/badge/license-MIT-0D9488"></a>
+  <img alt="平台" src="https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078D4">
+  <a href="https://tauri.app"><img alt="Tauri" src="https://img.shields.io/badge/Tauri-2.x-24C8DB"></a>
+  <img alt="Rust" src="https://img.shields.io/badge/Rust-stable-DEA584">
+</p>
 
 一个跑在 Windows 上的本地 JAR 服务管理器。把平时散落在各个目录、靠 `java -jar` 手动启动的服务收进一个窗口：导入、启动、看日志、查端口、管 JDK，都在一起。
 
@@ -175,6 +183,7 @@ npm run app:dev
 ## 目录结构
 
 ```
+├─ .github/                 Issue 表单与 PR 模板
 ├─ src/                     前端
 │  ├─ App.tsx               主界面、视图切换、确认弹窗
 │  ├─ api.ts                Tauri 命令封装
@@ -201,11 +210,15 @@ npm run app:dev
 │  │  ├─ jar.rs             读取 JAR 内配置
 │  │  └─ store.rs           store.json 读写
 │  ├─ icons/                应用图标
+│  ├─ build.rs              构建脚本（登记图标依赖）
 │  └─ tauri.conf.json       窗口与打包配置
 ├─ docs/screenshots/        README 截图
-├─ scripts/gen-icon.mjs    生成图标源图
+├─ scripts/gen-icon.mjs     生成图标源图
 ├─ testdata/                测试用 Java 源码与资源
-└─ LICENSE                  MIT 许可
+├─ CONTRIBUTING.md          贡献指南
+├─ CODE_OF_CONDUCT.md       行为准则
+├─ LICENSE                  MIT 许可
+└─ README.md                项目说明
 ```
 
 ## 开发说明
@@ -214,6 +227,10 @@ npm run app:dev
 - 前端类型检查：`npx tsc --noEmit`。
 - 图标：`node scripts/gen-icon.mjs` 用纯数学绘制 1024×1024 源图（`src-tauri/icons/source.png`），再 `npx tauri icon src-tauri/icons/source.png -o src-tauri/icons` 导出各尺寸与 `icon.ico`。
 - 修改 `src-tauri/tauri.conf.json` 的 identifier 会同时改变数据目录和单实例互斥体，已有配置不会自动带过去。
+
+## 参与贡献
+
+欢迎提 Issue 和 PR。开发环境怎么搭、代码约定、几个调试时容易踩的坑（比如开发模式会和正式版抢单实例锁）都写在 [CONTRIBUTING.md](CONTRIBUTING.md) 里。参与讨论和提交时请遵守[行为准则](CODE_OF_CONDUCT.md)。
 
 ## 许可证
 
