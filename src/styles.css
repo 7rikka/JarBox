@@ -1663,7 +1663,7 @@ textarea::placeholder {
   flex-direction: column;
   gap: 14px;
   max-width: 1020px;
-  padding-bottom: 62px;
+  padding-bottom: 18px;
 }
 .panel {
   background: var(--panel);
@@ -1819,7 +1819,28 @@ textarea::placeholder {
   font-size: 0;
   color: transparent;
 }
+/* 关于面板：版本号胶囊 + 复制按钮，需要覆盖 .toggle-row > div 的纵向排列 */
+.toggle-row > .about-ver {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+.ver-pill {
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--primary);
+  background: var(--primary-soft);
+  border: 1px solid #dcdcf8;
+  border-radius: 999px;
+  padding: 4px 11px;
+  white-space: nowrap;
+  user-select: text;
+}
 
+/* 保存反馈：只在保存中/刚保存完时短暂出现，空闲时不占位 */
 .save-bar {
   position: sticky;
   bottom: 0;
@@ -1828,25 +1849,25 @@ textarea::placeholder {
   gap: 9px;
   padding: 10px 14px;
   background: #fff;
-  border: 1px solid var(--line);
+  border: 1px solid #d6d7f7;
   border-radius: 12px;
   box-shadow: var(--shadow-md);
-  transform: translateY(6px);
-  opacity: 0.85;
-  transition: all 0.18s;
-}
-.save-bar.show {
-  transform: none;
-  opacity: 1;
-  border-color: #d6d7f7;
+  animation: save-bar-in 0.16s ease-out;
 }
 .save-bar > span {
   flex: 1;
   font-size: 12.3px;
-  color: var(--muted);
-}
-.save-bar.show > span {
   color: var(--primary);
+}
+@keyframes save-bar-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 
 /* ============================ 拖拽 / 提示 ============================ */

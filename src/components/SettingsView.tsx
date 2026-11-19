@@ -5,9 +5,11 @@ import type { Bootstrap, JavaInfo, JdkConfig, Store } from "../types";
 import { basename, errText, uid } from "../utils";
 import {
   CheckIcon,
+  CopyIcon,
   CubeIcon,
   FileIcon,
   FolderIcon,
+  InfoIcon,
   PlusIcon,
   RefreshIcon,
   SlidersIcon,
@@ -217,12 +219,8 @@ export function SettingsView({
     }
   }
 
-  const statusText =
-    status === "saving"
-      ? "保存中…"
-      : status === "saved"
-        ? `已保存 · ${savedAt}`
-        : "设置即时保存：改动会立刻写入，无需点保存";
+  // 空闲时不显示任何东西：设置是即时保存的，常驻一条提示只是干扰
+  const statusText = status === "saving" ? "保存中…" : `已保存 · ${savedAt}`;
 
   return (
     <div className="settings">
@@ -550,9 +548,50 @@ export function SettingsView({
         </div>
       </section>
 
-      <div className={`save-bar ${status !== "idle" ? "show" : ""}`}>
-        <span>{statusText}</span>
-      </div>
+      <section className="panel">
+        <header className="panel-head">
+          <div className="panel-title">
+            <span className="panel-ico">
+              <InfoIcon size={16} />
+            </span>
+            <div>
+              <h2>关于</h2>
+              <p>当前程序版本与发行方式</p>
+            </div>
+          </div>
+        </header>
+        <div className="panel-body">
+          <div className="toggle-row">
+            <div>
+              <b>JarBox 版本</b>
+              <span>便携版（绿色免安装），程序文件可随意移动；设置与服务列表保存在上面的「数据目录」里。</span>
+            </div>
+            <div className="about-ver">
+              <span className="ver-pill">v{boot.version}</span>
+              <button
+                className="icon-btn"
+                title="复制版本号"
+                onClick={async () => {
+                  try {
+                    await navigator.clipboard.writeText(boot.version);
+                    notify(`已复制版本号 v${boot.version}`);
+                  } catch {
+                    notify("复制失败，请手动记下版本号", "error");
+                  }
+                }}
+              >
+                <CopyIcon size={14} />
+              </button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {status !== "idle" && (
+        <div className="save-bar">
+          <span>{statusText}</span>
+        </div>
+      )}
     </div>
   );
 }

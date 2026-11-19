@@ -156,3 +156,10 @@ export const AlertIcon = (p: IconProps) => (
     <path d="M12 8v5M12 16.2v.1" />
   </Base>
 );
+
+export const InfoIcon = (p: IconProps) => (
+  <Base {...p}>
+    <circle cx="12" cy="12" r="8.4" />
+    <path d="M12 11.2v5.2M12 7.9v.1" />
+  </Base>
+);
