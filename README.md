@@ -16,7 +16,7 @@
 
 基于 Tauri v2（Rust）+ React 构建，发行物只有一个约 8 MB 的免安装 exe，不需要除 JRE 之外的任何额外依赖。
 
-当前版本 `1.0.0`，是项目开源后的第一个版本，以 [MIT 许可](LICENSE)发布。
+当前版本 `1.0.1`，以 [MIT 许可](LICENSE)发布。
 
 ![服务列表](docs/screenshots/services.png)
 
@@ -72,7 +72,7 @@
 
 ### 直接使用
 
-1. 下载 `JarBox-1.0.0-portable.exe`（或从源码构建后取 `jarbox.exe`）。
+1. 下载 `JarBox-1.0.1-portable.exe`（或从源码构建后取 `jarbox.exe`）。
 2. 双击运行 —— 免安装，可以放在任意目录，比如 `D:\jarbox\`。
 3. 打开「设置」，配置工作目录和至少一个 JDK。
 4. 回到服务列表，点「导入 JAR」或把 JAR 拖进窗口。
