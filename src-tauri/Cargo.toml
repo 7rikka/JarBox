@@ -1,6 +1,6 @@
 [package]
 name = "jarbox"
-version = "1.0.1"
+version = "1.0.2"
 description = "JarBox - 本地 JAR 服务管理器"
 authors = ["JarBox"]
 license = "MIT"

@@ -56,6 +56,15 @@ pub struct Store {
     /// 替换 JAR 时在 bak 目录里保留的历史版本个数
     #[serde(default = "default_keep_jar_versions")]
     pub keep_jar_versions: u32,
+    /// 日志按天分割：跨天自动换新文件
+    #[serde(default)]
+    pub log_split_by_day: bool,
+    /// 日志按大小分割
+    #[serde(default)]
+    pub log_split_by_size: bool,
+    /// 按大小分割的阈值（MB）
+    #[serde(default = "default_log_split_size_mb")]
+    pub log_split_size_mb: u32,
     #[serde(default)]
     pub default_jdk: String,
 }
@@ -72,6 +81,11 @@ fn default_keep_jar_versions() -> u32 {
     10
 }
 
+/// 按大小分割的默认阈值：50 MB
+fn default_log_split_size_mb() -> u32 {
+    50
+}
+
 impl Default for Store {
     fn default() -> Self {
         Self {
@@ -83,6 +97,9 @@ impl Default for Store {
             resume_on_start: true,
             import_mode: default_import_mode(),
             keep_jar_versions: default_keep_jar_versions(),
+            log_split_by_day: false,
+            log_split_by_size: false,
+            log_split_size_mb: default_log_split_size_mb(),
             default_jdk: String::new(),
         }
     }
@@ -278,6 +295,10 @@ pub struct LogFileInfo {
     pub size: u64,
     pub modified: i64,
     pub is_current: bool,
+    /// 这个文件覆盖的起始时间（毫秒时间戳，取自文件名里的启动时间）
+    pub started_at: i64,
+    /// 覆盖的结束时间：下一个分片的起始时间；0 表示还在写
+    pub ended_at: i64,
 }
 
 #[derive(Serialize, Clone, Debug, Default)]

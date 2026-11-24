@@ -1,7 +1,7 @@
 {
   "name": "jarbox",
   "private": true,
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "JarBox - 本地 JAR 服务管理器",
   "license": "MIT",
   "type": "module",

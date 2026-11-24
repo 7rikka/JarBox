@@ -37,6 +37,9 @@ export const api = {
     resumeOnStart?: boolean;
     importMode?: "copy" | "move";
     keepJarVersions?: number;
+    logSplitByDay?: boolean;
+    logSplitBySize?: boolean;
+    logSplitSizeMb?: number;
     defaultJdk?: string;
   }) => invoke<SaveResult>("update_settings", { patch }),
   detectJava: (path: string) => invoke<JavaInfo>("detect_java", { path }),

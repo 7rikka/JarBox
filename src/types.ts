@@ -44,6 +44,12 @@ export interface Store {
   importMode: "copy" | "move";
   /** 替换 JAR 时 bak 目录里保留的历史版本个数 */
   keepJarVersions: number;
+  /** 日志按天分割：跨天自动换新文件 */
+  logSplitByDay: boolean;
+  /** 日志按大小分割 */
+  logSplitBySize: boolean;
+  /** 按大小分割的阈值（MB） */
+  logSplitSizeMb: number;
   defaultJdk: string;
 }
 
@@ -118,6 +124,10 @@ export interface LogFileInfo {
   size: number;
   modified: number;
   isCurrent: boolean;
+  /** 这一段日志覆盖的起始时间（毫秒时间戳） */
+  startedAt: number;
+  /** 结束时间；0 表示还在写 */
+  endedAt: number;
 }
 
 export interface LogCounts {

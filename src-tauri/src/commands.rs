@@ -408,21 +408,52 @@ fn snapshot(state: &AppState) -> (Store, HashMap<String, Running>, HashMap<Strin
 /// 端口：运行中看当前日志，已停止时看最近一次日志。
 /// 找到后按「本次启动 + 日志文件」缓存，避免每次轮询重复读日志
 /// （服务日志写了很久以后，启动那行会被挤出尾部，就不该再重新扫）
+/// 日志按天/按大小分割后，启动那行可能落在更早的分片里，所以从新到旧扫几个。
 fn detect_port(state: &AppState, s: &Service, run: Option<&Running>) -> Option<u16> {
-    let (started, log) = match run {
-        Some(r) => (r.started_at, r.log_path.clone()),
-        None => (0, newest_log(log_dir_for(s))?),
-    };
+    let dir = log_dir_for(s);
+    let mut files: Vec<(i64, PathBuf)> = Vec::new();
+    if let Ok(entries) = fs::read_dir(&dir) {
+        for e in entries.flatten() {
+            let path = e.path();
+            if !path.is_file() {
+                continue;
+            }
+            let modified = e
+                .metadata()
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0);
+            files.push((modified, path));
+        }
+    }
+    if let Some(r) = run {
+        // 按天分割时会接着写当天已有的文件，它的「起始时间」早在本次启动之前，
+        // 所以这里看修改时间：只认本次启动期间真的被写过的分片。
+        files.retain(|(modified, _)| *modified + 2000 >= r.started_at);
+    }
+    files.sort_by(|a, b| b.0.cmp(&a.0));
+    let newest = files.first()?.1.clone();
+
+    let started = run.map(|r| r.started_at).unwrap_or(0);
     if let Ok(g) = state.ports.lock() {
         if let Some((c_started, c_log, port)) = g.get(&s.id) {
-            if *c_started == started && *c_log == log {
+            if *c_started == started && *c_log == newest {
                 return Some(*port);
             }
         }
     }
-    let port = crate::port::detect(&log)?;
+    let mut found = None;
+    for (_, path) in files.iter().take(6) {
+        if let Some(port) = crate::port::detect(path) {
+            found = Some(port);
+            break;
+        }
+    }
+    let port = found?;
     if let Ok(mut g) = state.ports.lock() {
-        g.insert(s.id.clone(), (started, log, port));
+        g.insert(s.id.clone(), (started, newest, port));
     }
     Some(port)
 }
@@ -625,8 +656,17 @@ fn start_impl(app: &AppHandle, state: &AppState, id: &str) -> Result<ServiceView
 
     let jvm_args = proc::split_args(&service.jvm_args);
     let prog_args = proc::split_args(&service.program_args);
-    let ts = Local::now().format("%Y%m%d-%H%M%S").to_string();
-    let log_path = log_dir_for(&service).join(format!("{}.log", ts));
+    // 日志分割策略：两个开关都关时保持老行为（一次启动一个文件、直接写句柄）
+    let policy = proc::LogPolicy {
+        split_by_day: store.log_split_by_day,
+        split_size: if store.log_split_by_size {
+            store.log_split_size_mb.clamp(1, 4096) as u64 * 1024 * 1024
+        } else {
+            0
+        },
+    };
+    let log_path = proc::initial_log_path(&log_dir_for(&service), policy.split_by_day)
+        .ok_or_else(|| "创建日志文件失败，请检查日志目录权限".to_string())?;
     let cmdline = format!(
         "{} {} -jar {} {}",
         java.to_string_lossy(),
@@ -653,6 +693,8 @@ fn start_impl(app: &AppHandle, state: &AppState, id: &str) -> Result<ServiceView
         &prog_args,
         &cwd,
         &log_path,
+        &policy,
+        &service.name,
         &banner,
     )?;
     let pid = launched.child.id();
@@ -678,7 +720,7 @@ fn start_impl(app: &AppHandle, state: &AppState, id: &str) -> Result<ServiceView
     save_session(state);
 
     let mut child = launched.child;
-    let sink = launched.log;
+    let sink = launched.sink;
     let app2 = app.clone();
     let sid = id.to_string();
     let name = service.name.clone();
@@ -707,17 +749,12 @@ fn start_impl(app: &AppHandle, state: &AppState, id: &str) -> Result<ServiceView
                 },
             );
         }
-        if let Ok(mut w) = sink.lock() {
-            use std::io::Write;
-            let _ = writeln!(
-                w,
-                "\n===== JarBox: {} 进程已退出（退出码 {}） {} =====\n",
-                name,
-                code.map(|c| c.to_string()).unwrap_or_else(|| "-".into()),
-                now_str()
-            );
-            let _ = w.flush();
-        }
+        sink.write_line(&format!(
+            "\n===== JarBox: {} 进程已退出（退出码 {}） {} =====\n",
+            name,
+            code.map(|c| c.to_string()).unwrap_or_else(|| "-".into()),
+            now_str()
+        ));
         let _ = app2.emit(
             "service-exit",
             serde_json::json!({ "id": sid, "name": name, "code": code }),
@@ -777,11 +814,12 @@ fn list_logs_impl(state: &AppState, service_id: &str) -> Result<Vec<LogFileInfo>
         None => return Ok(Vec::new()),
     };
     let _ = fs::create_dir_all(&dir);
-    let current = state
+    let running = state
         .running
         .lock()
         .ok()
-        .and_then(|g| g.get(service_id).map(|r| r.log_path.clone()));
+        .map(|g| g.contains_key(service_id))
+        .unwrap_or(false);
     let mut out: Vec<LogFileInfo> = Vec::new();
     if dir.is_dir() {
         if let Ok(entries) = fs::read_dir(&dir) {
@@ -800,24 +838,36 @@ fn list_logs_impl(state: &AppState, service_id: &str) -> Result<Vec<LogFileInfo>
                     .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                     .map(|d| d.as_millis() as i64)
                     .unwrap_or(0);
-                let is_current = current
-                    .as_ref()
-                    .map(|c| c == &path)
-                    .unwrap_or(false);
+                let name = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default();
                 out.push(LogFileInfo {
-                    name: path
-                        .file_name()
-                        .map(|n| n.to_string_lossy().to_string())
-                        .unwrap_or_default(),
+                    name: name.clone(),
                     path: path.to_string_lossy().to_string(),
                     size: meta.len(),
                     modified,
-                    is_current,
+                    is_current: false,
+                    started_at: proc::log_start_ms(&name).unwrap_or(modified),
+                    ended_at: 0,
                 });
             }
         }
     }
-    out.sort_by(|a, b| b.modified.cmp(&a.modified));
+
+    // 按起始时间排好，每段的结束时间就是下一段的开始时间；
+    // 正在写的最后一段没有结束时间（0），停止后就用文件的最后修改时间
+    out.sort_by(|a, b| a.started_at.cmp(&b.started_at).then(a.name.cmp(&b.name)));
+    let n = out.len();
+    for i in 0..n {
+        if i + 1 < n {
+            out[i].ended_at = out[i + 1].started_at;
+        } else {
+            out[i].is_current = running;
+            out[i].ended_at = if running { 0 } else { out[i].modified };
+        }
+    }
+    out.reverse();
     Ok(out)
 }
 
@@ -1138,6 +1188,9 @@ pub struct SettingsPatch {
     pub resume_on_start: Option<bool>,
     pub import_mode: Option<String>,
     pub keep_jar_versions: Option<u32>,
+    pub log_split_by_day: Option<bool>,
+    pub log_split_by_size: Option<bool>,
+    pub log_split_size_mb: Option<u32>,
     pub default_jdk: Option<String>,
 }
 
@@ -1170,6 +1223,15 @@ fn apply_settings_patch(store: &mut Store, patch: SettingsPatch) -> Option<bool>
     }
     if let Some(n) = patch.keep_jar_versions {
         store.keep_jar_versions = n.clamp(1, 200);
+    }
+    if let Some(v) = patch.log_split_by_day {
+        store.log_split_by_day = v;
+    }
+    if let Some(v) = patch.log_split_by_size {
+        store.log_split_by_size = v;
+    }
+    if let Some(n) = patch.log_split_size_mb {
+        store.log_split_size_mb = n.clamp(1, 4096);
     }
     if let Some(v) = patch.autostart {
         store.autostart = v;
@@ -2162,6 +2224,9 @@ mod tests {
             resume_on_start: true,
             import_mode: "copy".to_string(),
             keep_jar_versions: 10,
+            log_split_by_day: false,
+            log_split_by_size: false,
+            log_split_size_mb: 50,
             default_jdk: "a".to_string(),
         }
     }

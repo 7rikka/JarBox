@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import type { LogFileInfo, LogResult, ServiceView } from "../types";
-import { formatBytes, formatTime, lineLevel } from "../utils";
+import { formatBytes, lineLevel } from "../utils";
 import { Modal } from "./Modal";
 import { CopyIcon, FolderIcon, RefreshIcon, SearchIcon, TerminalIcon } from "./Icons";
 
@@ -23,6 +23,23 @@ const FONT_SIZES = [
 ];
 const FONT_KEY = "jarbox.logFontSize";
 const DEFAULT_FONT = 13;
+
+/** 读取行数的快捷档位：前四个是常用的「最近看一小段」 */
+const LINE_OPTIONS = [100, 200, 300, 400, 500, 1000, 2000, 5000];
+
+/** 日志列表里显示这一段文件覆盖的时间范围 */
+function pad2(n: number): string {
+  return String(n).padStart(2, "0");
+}
+function shortTime(ms: number): string {
+  const d = new Date(ms);
+  return `${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+}
+function rangeLabel(f: LogFileInfo): string {
+  const start = shortTime(f.startedAt || f.modified);
+  if (!f.endedAt) return `${start} → 至今`;
+  return `${start} → ${shortTime(f.endedAt)}`;
+}
 
 function readFontSize(): number {
   const raw = Number(localStorage.getItem(FONT_KEY));
@@ -200,12 +217,12 @@ export function LogViewer({
                   {formatBytes(f.size)}
                   {f.isCurrent && <em className="live-tag">运行中</em>}
                 </span>
-                <span className="lf-time">{formatTime(f.modified)}</span>
+                <span className="lf-time">{rangeLabel(f)}</span>
               </button>
             ))}
           </div>
           <button
-            className="btn ghost block"
+            className="btn ghost"
             onClick={() => void api.openPath(service.logDir, true)}
           >
             <FolderIcon size={15} /> 打开日志目录
@@ -260,10 +277,14 @@ export function LogViewer({
                 onChange={(e) => setLimit(Number(e.target.value))}
                 title="读取最近多少行"
               >
-                <option value={500}>最近 500 行</option>
-                <option value={1000}>最近 1000 行</option>
-                <option value={2000}>最近 2000 行</option>
-                <option value={5000}>最近 5000 行</option>
+                {!LINE_OPTIONS.includes(limit) && (
+                  <option value={limit}>最近 {limit} 行</option>
+                )}
+                {LINE_OPTIONS.map((n) => (
+                  <option key={n} value={n}>
+                    最近 {n} 行
+                  </option>
+                ))}
               </select>
               <select
                 value={fontSize}

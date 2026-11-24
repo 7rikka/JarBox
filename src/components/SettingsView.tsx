@@ -13,6 +13,7 @@ import {
   PlusIcon,
   RefreshIcon,
   SlidersIcon,
+  TerminalIcon,
   TrashIcon,
 } from "./Icons";
 
@@ -24,10 +25,14 @@ type Patch = {
   resumeOnStart?: boolean;
   importMode?: "copy" | "move";
   keepJarVersions?: number;
+  logSplitByDay?: boolean;
+  logSplitBySize?: boolean;
+  logSplitSizeMb?: number;
   defaultJdk?: string;
 };
 
 const KEEP_OPTIONS = [5, 10, 20, 30, 40, 50];
+const LOG_SIZE_OPTIONS = [5, 10, 20, 50, 100, 200, 500];
 
 export function SettingsView({
   boot,
@@ -48,6 +53,9 @@ export function SettingsView({
   const [resumeOnStart, setResumeOnStart] = useState(boot.store.resumeOnStart);
   const [importMode, setImportMode] = useState<"copy" | "move">(boot.store.importMode ?? "copy");
   const [keepJarVersions, setKeepJarVersions] = useState(boot.store.keepJarVersions ?? 10);
+  const [logSplitByDay, setLogSplitByDay] = useState(boot.store.logSplitByDay ?? false);
+  const [logSplitBySize, setLogSplitBySize] = useState(boot.store.logSplitBySize ?? false);
+  const [logSplitSizeMb, setLogSplitSizeMb] = useState(boot.store.logSplitSizeMb ?? 50);
   const [newPath, setNewPath] = useState("");
   const [versions, setVersions] = useState<Record<string, JavaInfo>>({});
   const [scanning, setScanning] = useState(false);
@@ -89,6 +97,9 @@ export function SettingsView({
       setResumeOnStart(b.store.resumeOnStart);
       setImportMode(b.store.importMode ?? "copy");
       setKeepJarVersions(b.store.keepJarVersions ?? 10);
+      setLogSplitByDay(b.store.logSplitByDay ?? false);
+      setLogSplitBySize(b.store.logSplitBySize ?? false);
+      setLogSplitSizeMb(b.store.logSplitSizeMb ?? 50);
       onSaved(b.store, b.autostartEnabled);
     } catch {
       /* 拉取都失败就只能保持现状，别再弹错 */
@@ -116,6 +127,9 @@ export function SettingsView({
         if (patch.resumeOnStart !== undefined) setResumeOnStart(res.store.resumeOnStart);
         if (patch.importMode !== undefined) setImportMode(res.store.importMode ?? "copy");
         if (patch.keepJarVersions !== undefined) setKeepJarVersions(res.store.keepJarVersions ?? 10);
+        if (patch.logSplitByDay !== undefined) setLogSplitByDay(res.store.logSplitByDay ?? false);
+        if (patch.logSplitBySize !== undefined) setLogSplitBySize(res.store.logSplitBySize ?? false);
+        if (patch.logSplitSizeMb !== undefined) setLogSplitSizeMb(res.store.logSplitSizeMb ?? 50);
 
         if (res.autostartWarning) {
           notify(`开机自启没生效：${res.autostartWarning}`, "error");
@@ -338,6 +352,88 @@ export function SettingsView({
                 </option>
               ))}
             </select>
+          </div>
+        </div>
+      </section>
+
+      <section className="panel">
+        <header className="panel-head">
+          <div className="panel-title">
+            <span className="panel-ico">
+              <TerminalIcon size={16} />
+            </span>
+            <div>
+              <h2>运行日志</h2>
+              <p>日志怎么分割。两个开关都关掉就是不分割：每次启动写一个新文件</p>
+            </div>
+          </div>
+        </header>
+        <div className="panel-body">
+          <label className="toggle-row">
+            <div>
+              <b>按天分割</b>
+              <span>跨天自动换新文件；同一天内多次启动会接着写在当天的文件里</span>
+            </div>
+            <span className="switch">
+              <input
+                type="checkbox"
+                checked={logSplitByDay}
+                onChange={(e) => {
+                  const v = e.target.checked;
+                  setLogSplitByDay(v);
+                  commit({ logSplitByDay: v });
+                }}
+              />
+              <span />
+            </span>
+          </label>
+          <label className="toggle-row">
+            <div>
+              <b>按大小分割</b>
+              <span>单个文件涨到上限就切到新文件，避免一个日志涨到几个 G 打不开</span>
+            </div>
+            <span className="switch">
+              <input
+                type="checkbox"
+                checked={logSplitBySize}
+                onChange={(e) => {
+                  const v = e.target.checked;
+                  setLogSplitBySize(v);
+                  commit({ logSplitBySize: v });
+                }}
+              />
+              <span />
+            </span>
+          </label>
+          <div className="toggle-row">
+            <div>
+              <b>单个文件上限</b>
+              <span>超过这个大小就换新文件，单位 MB（按大小分割开启时生效）</span>
+            </div>
+            <select
+              className="select-mini"
+              value={logSplitSizeMb}
+              disabled={!logSplitBySize}
+              onChange={(e) => {
+                const n = Number(e.target.value);
+                setLogSplitSizeMb(n);
+                commit({ logSplitSizeMb: n });
+              }}
+            >
+              {!LOG_SIZE_OPTIONS.includes(logSplitSizeMb) && (
+                <option value={logSplitSizeMb}>{logSplitSizeMb} MB</option>
+              )}
+              {LOG_SIZE_OPTIONS.map((n) => (
+                <option key={n} value={n}>
+                  {n} MB
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="field-hint">
+            开启分割后日志由 JarBox 转发写入；如果退出 JarBox 但让服务继续运行，
+            这段时间产生的内容不会被记录。不分割时服务直接把日志写进文件，
+            退出管理器也不影响记录。设置对下次启动的服务生效。
           </div>
         </div>
       </section>

@@ -1217,6 +1217,9 @@ textarea::placeholder {
 }
 .log-files > .btn {
   margin: 8px;
+  /* 不带 .block 的 100% 宽度：100% + 左右 margin 会顶出容器，文字看着偏右 */
+  width: auto;
+  align-self: stretch;
   border-radius: 8px;
   height: 30px;
   font-size: 12px;
@@ -1228,13 +1231,21 @@ textarea::placeholder {
   min-width: 0;
   min-height: 0;
 }
+/* 两行布局：搜索框独占第一行，级别筛选和右侧控件在第二行 */
 .log-toolbar {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  gap: 10px;
+  gap: 9px 10px;
   padding: 10px 12px;
   border-bottom: 1px solid var(--line);
-  flex-wrap: wrap;
+}
+.log-toolbar > .search-box {
+  grid-column: 1 / -1;
+  max-width: none;
+}
+.log-toolbar .level-chips {
+  min-width: 0;
 }
 .search-box {
   display: flex;
